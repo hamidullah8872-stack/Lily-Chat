@@ -102,7 +102,6 @@ export default function App() {
       const getBaseImage = async () => {
         if (uploadingImage) return uploadingImage;
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('data:image')) return activeCharacter.avatar;
-        // If avatar is a URL, we try to convert it (simplified for this environment)
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('http')) {
           try {
             const resp = await fetch(activeCharacter.avatar);
@@ -117,31 +116,28 @@ export default function App() {
         return null;
       };
 
-      if (activeMode === 'picture' && uploadingImage) {
-        // Direct modification of uploaded image
-        const { imageUrl, text } = await editImage(uploadingImage, userMessage.content || "Modify this image based on the prompt");
-        generatedImageUrl = imageUrl || null;
-        responseText = text;
-      } else {
-        // Standard chat logic (detecting generate tags)
-        responseText = await chatWithGemini(activeCharacter, newChatHistory, userMessage.content, activeMode);
+      // Always run through chatWithGemini first to handle context and decide if image is needed
+      responseText = await chatWithGemini(
+        activeCharacter, 
+        newChatHistory.slice(0, -1), // History without the current message
+        userMessage.content, 
+        activeMode,
+        uploadingImage || undefined
+      );
+      
+      const imageMatch = responseText.match(/\[GENERATE_IMAGE:\s*([\s\S]*?)\]/i);
+      if (imageMatch) {
+        const imagePrompt = imageMatch[1].trim();
+        const baseImage = await getBaseImage();
         
-        const imageMatch = responseText.match(/\[GENERATE_IMAGE:\s*([\s\S]*?)\]/i);
-        if (imageMatch) {
-          const imagePrompt = imageMatch[1].trim();
-          const baseImage = await getBaseImage();
-          
-          if (baseImage) {
-            // Use Edit model for consistency with profile or uploaded pic
-            const editResult = await editImage(baseImage, imagePrompt);
-            generatedImageUrl = editResult.imageUrl || null;
-          } else {
-            // Fallback to pure generation
-            generatedImageUrl = await generateImage(imagePrompt);
-          }
-          
-          responseText = responseText.replace(/\[GENERATE_IMAGE:[\s\S]*?\]/gi, '').trim();
+        if (baseImage) {
+          const editResult = await editImage(baseImage, imagePrompt);
+          generatedImageUrl = editResult.imageUrl || null;
+        } else {
+          generatedImageUrl = await generateImage(imagePrompt);
         }
+        
+        responseText = responseText.replace(/\[GENERATE_IMAGE:[\s\S]*?\]/gi, '').trim();
       }
 
       const aiMessage: Message = {
