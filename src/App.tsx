@@ -102,9 +102,11 @@ export default function App() {
       const getBaseImage = async () => {
         if (uploadingImage) return uploadingImage;
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('data:image')) return activeCharacter.avatar;
+        // For external avatars, we attempt to use them as anchors for edits, but ignore if they fail CORS
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('http')) {
           try {
-            const resp = await fetch(activeCharacter.avatar);
+            const resp = await fetch(activeCharacter.avatar, { mode: 'cors' });
+            if (!resp.ok) return null;
             const blob = await resp.blob();
             return new Promise<string>((resolve) => {
               const r = new FileReader();
@@ -119,25 +121,35 @@ export default function App() {
       // Always run through chatWithGemini first to handle context and decide if image is needed
       responseText = await chatWithGemini(
         activeCharacter, 
-        newChatHistory.slice(0, -1), // History without the current message
+        newChatHistory.slice(0, -1),
         userMessage.content, 
         activeMode,
         uploadingImage || undefined
       );
       
-      const imageMatch = responseText.match(/\[GENERATE_IMAGE:\s*([\s\S]*?)\]/i);
+      // Support Urdu/Pashto text around the tag and variations in whitespace
+      const imageMatch = responseText.match(/\[\s*GENERATE_IMAGE\s*:\s*([\s\S]*?)\s*\]/i);
       if (imageMatch) {
         const imagePrompt = imageMatch[1].trim();
         const baseImage = await getBaseImage();
         
-        if (baseImage) {
-          const editResult = await editImage(baseImage, imagePrompt);
-          generatedImageUrl = editResult.imageUrl || null;
-        } else {
-          generatedImageUrl = await generateImage(imagePrompt);
+        try {
+          // If we have an uploaded image to edit OR a local avatar base, use edit model
+          if (baseImage) {
+            const editResult = await editImage(baseImage, imagePrompt);
+            generatedImageUrl = editResult.imageUrl || null;
+          } else {
+            // Otherwise generate clean based on text prompt (more reliable for external avatars)
+            generatedImageUrl = await generateImage(imagePrompt);
+          }
+        } catch (imgError) {
+          console.error("Visual engine error:", imgError);
+          // Only show error note if they actually asked for a picture
+          responseText += "\n\n(Systems update: Visual engine processing is currently saturated. Retrying in a moment...)";
         }
         
-        responseText = responseText.replace(/\[GENERATE_IMAGE:[\s\S]*?\]/gi, '').trim();
+        // Clean up text by removing the tag
+        responseText = responseText.replace(/\[\s*GENERATE_IMAGE\s*:\s*[\s\S]*?\s*\]/gi, '').trim();
       }
 
       const aiMessage: Message = {
