@@ -145,7 +145,7 @@ export default function App() {
         } catch (imgError) {
           console.error("Visual engine error:", imgError);
           // Only show error note if they actually asked for a picture
-          responseText += "\n\n(Systems update: Visual engine processing is currently saturated. Retrying in a moment...)";
+          responseText += "\n\n(Note: The visual core is currently under high load. Please try a different request or retry in a few moments.)";
         }
         
         // Clean up text by removing the tag
