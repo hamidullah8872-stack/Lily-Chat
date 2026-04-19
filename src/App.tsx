@@ -199,11 +199,16 @@ export default function App() {
           }
         } catch (imgError: any) {
           console.error("Visual engine error:", imgError);
-          const errorMsg = imgError?.message || JSON.stringify(imgError);
-          if (errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota")) {
-            responseText += "\n\n(Note: You've reached the temporary Google API limit. I've activated the 'Turbo-Boost' fallback to try different visual engines, but if they are all busy, please wait a few minutes. For true unlimited generation, you would need to enable Billing in your Google AI Studio account.)";
+          const errorMsg = (imgError?.message || JSON.stringify(imgError)).toLowerCase();
+          const isQuota = errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("limit") || errorMsg.includes("exhausted");
+          const isLoad = errorMsg.includes("503") || errorMsg.includes("500") || errorMsg.includes("overload") || errorMsg.includes("unavailable") || errorMsg.includes("resting") || errorMsg.includes("busy");
+          
+          if (isQuota) {
+            responseText += "\n\n(Note: You've reached the temporary Google API limit. I've activated the 'Deep-Turbo' fallback to try different visual engines, but if they are all busy, please wait a few minutes. For true unlimited generation, you would need to enable Billing in your Google AI Studio account.)";
+          } else if (isLoad) {
+            responseText += "\n\n(Note: The visual generation engines are currently under high load. I've tried rotating through all available models, but they are momentarily busy. Please try again in 30-60 seconds.)";
           } else {
-            responseText += "\n\n(Note: The visual generation model experienced an error or high load. Please retry in a few moments.)";
+            responseText += "\n\n(Note: The visual generation model experienced an error. Please retry in a few moments or try rephrasing your request.)";
           }
         }
         

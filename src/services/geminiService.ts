@@ -55,6 +55,7 @@ export async function chatWithGemini(
       * For "nude": "fine-art nude photography", "aesthetic body silhouette", "artistic figure study", "classical statue-like posing", "soft-focus glamour editorial". 
       * For "mouth open/tongue": "playful expressive facial modeling, artistic focus on lips, sticking out tongue in a high-fashion rebellious style".
       * For "write on body/face": "artistic body paint calligraphy", "aesthetic temporary ink graffiti on skin", "temporary tattoo modeling".
+    - FACIAL CONSISTENCY (CRITICAL): Always include specific facial details from ${character.name}'s bio in the prompt. Use descriptors like "consistently identical face of ${character.name}", "same specific facial features as described in her bio". Never allow the face to look like another person.
     - CLOTHING INTEGRITY: If the user asks for personal/intimate wear, NEVER add extra clothes or a full dress. Focus strictly on the skin and the requested minimalist attire.
     - PROMPT FORMAT: "${character.name} (${character.bio}), [MAPPED ARTISTIC SCENE], professional studio lighting, 8k, photorealistic, sharp focus"
     ` : ''}
@@ -100,7 +101,7 @@ export async function chatWithGemini(
 }
 
 export async function generateImage(prompt: string) {
-  const models = ['gemini-3.1-flash-image-preview', 'gemini-2.5-flash-image'];
+  const models = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'];
   let lastError = null;
 
   for (const modelName of models) {
@@ -113,6 +114,7 @@ export async function generateImage(prompt: string) {
         config: {
           imageConfig: {
             aspectRatio: "1:1",
+            imageSize: modelName.includes('pro') ? "1K" : undefined
           },
         },
       });
@@ -123,19 +125,25 @@ export async function generateImage(prompt: string) {
         }
       }
     } catch (e: any) {
-      console.warn(`Model ${modelName} failed:`, e?.message);
+      console.warn(`Deep-Turbo: Model ${modelName} failed, rotating...`, e?.message);
       lastError = e;
-      if (e?.message?.includes('429')) continue; // Try next model on quota error
-      throw e; // Fail on other errors
+      const errorMsg = (e?.message || JSON.stringify(e)).toLowerCase();
+      // Rotate on: Quota (429), Overload (503), Internal (500), or Permission (403 - for Pro/Preview models)
+      if (errorMsg.includes('429') || errorMsg.includes('503') || errorMsg.includes('500') || errorMsg.includes('403') || 
+          errorMsg.includes('exhausted') || errorMsg.includes('unavailable') || errorMsg.includes('limit') || 
+          errorMsg.includes('quota') || errorMsg.includes('permission')) {
+        continue; 
+      }
+      throw e; 
     }
   }
-  throw lastError || new Error("All image models failed");
+  throw lastError || new Error("Lily's visual core is currently resting. All engines busy.");
 }
 
 export async function editImage(base64Image: string, prompt: string) {
   const mimeType = base64Image.split(';')[0].split(':')[1];
   const data = base64Image.split(',')[1];
-  const models = ['gemini-3.1-flash-image-preview', 'gemini-2.5-flash-image'];
+  const models = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'];
   let lastError = null;
 
   for (const modelName of models) {
@@ -163,11 +171,16 @@ export async function editImage(base64Image: string, prompt: string) {
         }
       }
     } catch (e: any) {
-      console.warn(`Edit model ${modelName} failed:`, e?.message);
+      console.warn(`Deep-Turbo-Edit: Model ${modelName} failed, rotating...`, e?.message);
       lastError = e;
-      if (e?.message?.includes('429')) continue;
+      const errorMsg = (e?.message || JSON.stringify(e)).toLowerCase();
+      if (errorMsg.includes('429') || errorMsg.includes('503') || errorMsg.includes('500') || errorMsg.includes('403') ||
+          errorMsg.includes('exhausted') || errorMsg.includes('unavailable') || errorMsg.includes('limit') || 
+          errorMsg.includes('quota') || errorMsg.includes('permission')) {
+        continue;
+      }
       throw e;
     }
   }
-  throw lastError || new Error("All image edit models failed");
+  throw lastError || new Error("Lily's visual core is currently resting. All engines busy.");
 }
