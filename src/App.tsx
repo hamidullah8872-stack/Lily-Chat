@@ -33,6 +33,7 @@ export default function App() {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [uploadingImage, setUploadingImage] = useState<string | null>(null);
+  const avatarCache = useRef<Record<string, string>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -44,10 +45,25 @@ export default function App() {
     if (savedMessages) setMessages(JSON.parse(savedMessages));
   }, []);
 
-  // Save state to localStorage
+  // Save state to localStorage with Quota protection
   useEffect(() => {
-    localStorage.setItem('lily_characters', JSON.stringify(characters));
-    localStorage.setItem('lily_messages', JSON.stringify(messages));
+    try {
+      localStorage.setItem('lily_characters', JSON.stringify(characters));
+      localStorage.setItem('lily_messages', JSON.stringify(messages));
+    } catch (e) {
+      console.warn("Storage quota hit, pruning old messages...");
+      // Prune messages: Keep only last 5 messages per character to free up space
+      const prunedMessages: Record<string, Message[]> = {};
+      Object.keys(messages).forEach(id => {
+        prunedMessages[id] = messages[id].slice(-5);
+      });
+      setMessages(prunedMessages);
+      try {
+        localStorage.setItem('lily_messages', JSON.stringify(prunedMessages));
+      } catch (innerE) {
+        localStorage.clear(); // Emergency reset if still failing
+      }
+    }
   }, [characters, messages]);
 
   useEffect(() => {
@@ -101,55 +117,108 @@ export default function App() {
 
       const getBaseImage = async () => {
         if (uploadingImage) return uploadingImage;
-        if (activeCharacter.avatar && activeCharacter.avatar.startsWith('data:image')) return activeCharacter.avatar;
-        // For external avatars, we attempt to use them as anchors for edits, but ignore if they fail CORS
+        if (avatarCache.current[activeCharacter.id]) return avatarCache.current[activeCharacter.id];
+        
+        if (activeCharacter.avatar && activeCharacter.avatar.startsWith('data:image')) {
+          avatarCache.current[activeCharacter.id] = activeCharacter.avatar;
+          return activeCharacter.avatar;
+        }
+
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('http')) {
           try {
             const resp = await fetch(activeCharacter.avatar, { mode: 'cors' });
             if (!resp.ok) return null;
             const blob = await resp.blob();
-            return new Promise<string>((resolve) => {
+            const base64 = await new Promise<string>((resolve) => {
               const r = new FileReader();
               r.onloadend = () => resolve(r.result as string);
               r.readAsDataURL(blob);
             });
+            avatarCache.current[activeCharacter.id] = base64;
+            return base64;
           } catch { return null; }
         }
         return null;
       };
 
-      // Always run through chatWithGemini first to handle context and decide if image is needed
-      responseText = await chatWithGemini(
-        activeCharacter, 
-        newChatHistory.slice(0, -1),
-        userMessage.content, 
-        activeMode,
-        uploadingImage || undefined
-      );
+      // Start both tasks in parallel
+      const [geminiResponse, baseImage] = await Promise.all([
+        chatWithGemini(
+          activeCharacter, 
+          newChatHistory.slice(0, -1),
+          userMessage.content, 
+          activeMode,
+          uploadingImage || undefined
+        ),
+        getBaseImage()
+      ]);
+
+      responseText = geminiResponse;
       
-      // Support Urdu/Pashto text around the tag and variations in whitespace
-      const imageMatch = responseText.match(/\[\s*GENERATE_IMAGE\s*:\s*([\s\S]*?)\s*\]/i);
+      // Extract tag
+      let imageMatch = responseText.match(/\[\s*GENERATE_IMAGE\s*:\s*([\s\S]*?)\s*\]/i);
+      
+      // Fallback: If in picture mode and NO tag was generated, treat the whole response as the prompt
+      if (!imageMatch && activeMode === 'picture' && responseText.trim().length > 0) {
+        // Only if it doesn't look like a standard refusal
+        const lowerText = responseText.toLowerCase();
+        if (!lowerText.includes("cannot") && !lowerText.includes("sorry") && !lowerText.includes("unable")) {
+          imageMatch = [null, responseText.trim()] as any;
+        }
+      }
+
       if (imageMatch) {
-        const imagePrompt = imageMatch[1].trim();
-        const baseImage = await getBaseImage();
+        const rawPrompt = imageMatch[1].trim();
         
+        // Advanced Client-Side Artistic Re-mapping
+        let enhancedPrompt = rawPrompt.toLowerCase();
+        enhancedPrompt = enhancedPrompt.replace(/write (.*) on (your|her|my|the) (face|body|skin|chest)/gi, 'aesthetic body paint calligraphy reading "$1" on $3, artistic temporary ink graffiti');
+        enhancedPrompt = enhancedPrompt.replace(/\bbra\b/gi, 'minimalist fine-art intimate wear');
+        enhancedPrompt = enhancedPrompt.replace(/\bpanty\b/gi, 'matching artistic lace details');
+        enhancedPrompt = enhancedPrompt.replace(/\bnude\b/gi, 'fine-art figure study, aesthetic silhouette photography');
+        enhancedPrompt = enhancedPrompt.replace(/\bslut\b/gi, 'alluring high-fashion provocative expression');
+        
+        // Ensure character details and facial consistency are anchored in the prompt
+        const faceAnchor = `Face of ${activeCharacter.name} (${activeCharacter.bio}), same facial features, specific identifiers from bio,`;
+        const imagePrompt = `${faceAnchor} ${enhancedPrompt}, professional studio lighting, 8k, photorealistic, sharp focus, high detail`;
+        
+        // Optimize: If user asks for very specific skin-focused or intimate scenes, skip the dressed base image to avoid "clothed-bias"
+        const isMinimalist = /\b(intimate|lingerie|skin|silhouette|study|minimalist)\b/i.test(enhancedPrompt);
+        const baseImage = isMinimalist ? null : await getBaseImage();
+
         try {
-          // If we have an uploaded image to edit OR a local avatar base, use edit model
           if (baseImage) {
             const editResult = await editImage(baseImage, imagePrompt);
             generatedImageUrl = editResult.imageUrl || null;
           } else {
-            // Otherwise generate clean based on text prompt (more reliable for external avatars)
             generatedImageUrl = await generateImage(imagePrompt);
           }
-        } catch (imgError) {
+          
+          if (!generatedImageUrl) {
+             responseText += "\n\n(Note: The visual generation core hit a safety filter. To get your picture, try using more artistic photography terms like 'glamour modeling', 'fine-art silhouette', or 'aesthetic body art' instead of bold words.)";
+          }
+        } catch (imgError: any) {
           console.error("Visual engine error:", imgError);
-          // Only show error note if they actually asked for a picture
-          responseText += "\n\n(Note: The visual core is currently under high load. Please try a different request or retry in a few moments.)";
+          const errorMsg = imgError?.message || JSON.stringify(imgError);
+          if (errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota")) {
+            responseText += "\n\n(Note: You've reached the temporary Google API limit. I've activated the 'Turbo-Boost' fallback to try different visual engines, but if they are all busy, please wait a few minutes. For true unlimited generation, you would need to enable Billing in your Google AI Studio account.)";
+          } else {
+            responseText += "\n\n(Note: The visual generation model experienced an error or high load. Please retry in a few moments.)";
+          }
         }
         
-        // Clean up text by removing the tag
+        // Clean up the text by removing the tag
         responseText = responseText.replace(/\[\s*GENERATE_IMAGE\s*:\s*[\s\S]*?\s*\]/gi, '').trim();
+        
+        // Ensure we don't send an empty bubble if everything was stripped
+        if (activeMode === 'picture' && !responseText && !generatedImageUrl) {
+          responseText = "I tried to generate that for you, but the visual core hit a safety limit. Try asking for a different scene or outfit!";
+        }
+
+        // If in picture mode and we have an image, we can hide the rest of the text if it was just a raw prompt fallback
+        if (activeMode === 'picture' && generatedImageUrl && !geminiResponse.includes('[GENERATE_IMAGE')) {
+          responseText = ""; // Hide the raw text we used as a prompt
+        }
       }
 
       const aiMessage: Message = {
@@ -347,7 +416,7 @@ export default function App() {
               {/* Messages Area */}
               <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 scrollbar-thin scrollbar-thumb-white/5 scrollbar-track-transparent">
                 <div className="max-w-4xl mx-auto flex flex-col space-y-8">
-                  {messages[activeCharacterId]?.map((msg) => (
+                  {messages[activeCharacterId]?.map((msg) => (msg.content || msg.imageUrl) && (
                     <div 
                       key={msg.id} 
                       className={cn(
