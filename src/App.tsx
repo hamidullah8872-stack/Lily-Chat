@@ -126,7 +126,8 @@ export default function App() {
 
         if (activeCharacter.avatar && activeCharacter.avatar.startsWith('http')) {
           try {
-            const resp = await fetch(activeCharacter.avatar, { mode: 'cors' });
+            const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(activeCharacter.avatar)}`;
+            const resp = await fetch(proxyUrl);
             if (!resp.ok) return null;
             const blob = await resp.blob();
             const base64 = await new Promise<string>((resolve) => {
@@ -136,7 +137,10 @@ export default function App() {
             });
             avatarCache.current[activeCharacter.id] = base64;
             return base64;
-          } catch { return null; }
+          } catch (error) {
+            console.error("Avatar fetch error:", error);
+            return null; 
+          }
         }
         return null;
       };
